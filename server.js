@@ -1,87 +1,74 @@
-import express from "express";
-import fetch from "node-fetch";
-import cors from "cors";
+import express from 'express';
+import fetch from 'node-fetch';
+import cors from 'cors';
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+app.use(cors()); // Allows access from browsers
 
-// ENV secrets (Render Dashboard → Environment)
-const REAL_API_BASE = process.env.REAL_API_BASE;   // e.g. https://real-api.example.com
-const REAL_API_KEY  = process.env.REAL_API_KEY;    // if needed
+// --- Get your secret keys from Render's Environment Variables ---
+const REAL_API_URL = process.env.REAL_API_URL;
+const REAL_API_KEY = process.env.REAL_API_KEY;
+const TRIAL_API_KEY = process.env.TRIAL_API_KEY;
 
-// Utility: safe JSON parse
-const safeJson = async (res) => {
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return { raw: text }; }
-};
+// --- Define the main route for your proxy API ---
+app.get('/info', async (req, res) => {
+    // 1. Get the parameters from the user's request
+    const userKey = req.query.key;
+    const type = req.query.type;
+    const term = req.query.term;
 
-// Example endpoint: pass-through with owner tag
-app.get("/check", async (req, res) => {
-  try {
-    // Query params pass-through, e.g. plate=AS05N9378
-    const qs = new URLSearchParams(req.query).toString();
+    // 2. Check if the user's trial key is correct
+    if (!userKey || userKey !== TRIAL_API_KEY) {
+        return res.status(401).json({
+            status: 'error',
+            message: 'Invalid or missing API key.',
+            api_owner: '@TrustedXDeal'
+        });
+    }
 
-    // Construct real API URL
-    const url = `${REAL_API_BASE}/check?${qs}`;
+    // 3. Make sure 'type' and 'term' were provided
+    if (!type || !term) {
+        return res.status(400).json({
+            status: 'error',
+            message: 'Missing required parameters: type and term.',
+            api_owner: '@TrustedXDeal'
+        });
+    }
 
-    // Forward headers as required
-    const realRes = await fetch(url, {
-      headers: {
-        "Accept": "application/json",
-        "Authorization": REAL_API_KEY ? `Bearer ${REAL_API_KEY}` : undefined
-      }
-    });
+    try {
+        // 4. Build the URL for the REAL API
+        // It uses the 'type' and 'term' from the user, but YOUR secret key
+        const realApiParams = new URLSearchParams({
+            key: REAL_API_KEY,
+            type: type,
+            term: term
+        });
+        const finalUrl = `${REAL_API_URL}?${realApiParams.toString()}`;
 
-    // Read body safely
-    const body = await safeJson(realRes);
+        // 5. Call the real API
+        const apiResponse = await fetch(finalUrl);
+        const responseData = await apiResponse.json();
 
-    // Inject owner block
-    const wrapped = {
-      ...(
-        typeof body === "object" && body !== null
-        ? body
-        : { data: body }
-      ),
-      api_owner: "@TrustedXDeal"
-    };
+        // 6. Add your owner tag to the response
+        const modifiedResponse = {
+            ...responseData, // This copies the whole response from the real API
+            api_owner: '@TrustedXDeal' // This adds your tag
+        };
 
-    // Mirror status code
-    res.status(realRes.status).json(wrapped);
-  } catch (err) {
-    res.status(500).json({
-      error: "proxy_error",
-      message: err?.message || "Unknown error",
-      api_owner: "@TrustedXDeal"
-    });
-  }
-});
+        // 7. Send the complete, modified response back to the user
+        res.status(apiResponse.status).json(modifiedResponse);
 
-// Optional: POST variant
-app.post("/check", async (req, res) => {
-  try {
-    const url = `${REAL_API_BASE}/check`;
-    const realRes = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Authorization": REAL_API_KEY ? `Bearer ${REAL_API_KEY}` : undefined
-      },
-      body: JSON.stringify(req.body || {})
-    });
-
-    const body = await safeJson(realRes);
-    const wrapped = {
-      ...(typeof body === "object" && body !== null ? body : { data: body }),
-      api_owner: "@TrustedXDeal"
-    };
-
-    res.status(realRes.status).json(wrapped);
-  } catch (err) {
-    res.status(500).json({ error: "proxy_error", message: err?.message || "Unknown error", api_owner: "@TrustedXDeal" });
-  }
+    } catch (error) {
+        // This will catch any network errors
+        res.status(500).json({
+            status: 'error',
+            message: 'Proxy server failed to fetch data.',
+            api_owner: '@TrustedXDeal'
+        });
+    }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Proxy running on ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Proxy server is running on port ${PORT}`);
+});
